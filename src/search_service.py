@@ -997,48 +997,14 @@ class SearchService:
            else:
                logger.warning(f"{provider.name} 搜索失败: {response.error_message}，尝试下一个引擎")
            
-       # 所有引擎都失败
-       return SearchResponse(
-           query=query,
-           results=[],
-           provider="None",
-           success=False,
-           error_message="所有搜索引擎均不可用或搜索失败"
-       )
-        Args:
-            stock_code: 股票代码
-            stock_name: 股票名称
-            max_results: 最大返回结果数
-            focus_keywords: 重点关注的关键词列表
-            
-        Returns:
-            SearchResponse 对象
-        """
-        # 智能确定搜索时间范围
-        # 策略：
-        # 1. 周二至周五：搜索近1天（24小时）
-        # 2. 周六、周日：搜索近2-3天（覆盖周末）
-        # 3. 周一：搜索近3天（覆盖周末）
-        today_weekday = datetime.now().weekday()
-        if today_weekday == 0: # 周一
-            search_days = 3
-        elif today_weekday >= 5: # 周六(5)、周日(6)
-            search_days = 2
-        else: # 周二(1) - 周五(4)
-            search_days = 1
-
-        # 构建搜索查询（优化搜索效果）
-        if focus_keywords:
-            # 如果提供了关键词，直接使用关键词作为查询
-            query = " ".join(focus_keywords)
-        else:
-            # 默认主查询：股票名称 + 核心关键词
-            query = f"{stock_name} {stock_code} 股票 最新消息"
-
-        logger.info(f"搜索股票新闻: {stock_name}({stock_code}), query='{query}', 时间范围: 近{search_days}天")
-        
-        # 依次尝试各个搜索引擎
-        for provider in self._providers:
+        # 所有引擎都失败
+        return SearchResponse(
+            query=query,
+            results=[],
+            provider="None",
+            success=False,
+            error_message="所有搜索引擎均不可用或搜索失败"
+        )
             if not provider.is_available:
                 continue
             

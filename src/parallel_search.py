@@ -1,250 +1,331 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-并行搜索服务扩展
+并行搜索服务模块
 ===================================
 
-为SearchService添加多源并行搜索功能
+提供多搜索引擎并行调用能力，实现：
+1. 同时调用多个搜索引擎
+2. 故障自动隔离和切换
+3. 结果智能合并和去重
+4. 性能优化和超时控制
+
+此模块独立于原有的search_service.py，避免修改复杂文件带来的风险。
 """
 
-import time
+import asyncio
 import logging
-from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Callable, Any
+from datetime import datetime, timedelta
 
-from .search_service import SearchService, SearchResponse, SearchResult, ParallelSearchResponse
+from src.search_service import SearchResponse, BaseSearchProvider
 
 logger = logging.getLogger(__name__)
 
 
-def enable_parallel_search(
-    search_service: SearchService,
-    max_concurrent: int = 4,
-    merge_strategy: str = "dedupe_by_url"
-) -> SearchService:
+@dataclass
+class ParallelSearchResult:
+    """并行搜索结果"""
+    query: str
+    results: List[Dict[str, Any]]
+    providers_used: List[str]
+    success_count: int
+    failed_providers: List[str]
+    execution_time: float
+    merged_results: List[Dict[str, Any]]
+
+
+class ParallelSearchService:
     """
-    为现有SearchService实例启用并行搜索功能
+    并行搜索服务
     
-    Args:
-        search_service: 原始SearchService实例
-        max_concurrent: 最大并发数
-        merge_strategy: 合并策略 ("dedupe_by_url", "score_based", "keep_all")
+    特点：
+    - 非阻塞并行调用
+    - 智能结果合并
+    - 故障隔离
+    - 超时控制
+    """
+    
+    def __init__(self, providers: List[BaseSearchProvider], max_workers: int = 3):
+        """
+        初始化并行搜索服务
         
-    Returns:
-        增强后的SearchService实例
-    """
-    # 添加并行搜索方法到实例
-    search_service.max_concurrent_searches = max_concurrent
-    search_service.merge_strategy = merge_strategy
+        Args:
+            providers: 搜索提供者列表
+            max_workers: 最大并发数
+        """
+        self.providers = [p for p in providers if p.is_available]
+        self.max_workers = min(max_workers, len(self.providers))
+        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
+        
+        logger.info(f"[并行搜索] 初始化完成，可用引擎: {[p.name for p in self.providers]}, 并发数: {self.max_workers}")
     
-    # 绑定并行搜索方法
-    search_service.search_parallel = lambda query, max_results=5, days=7: _search_parallel(
-        search_service, query, max_results, days, merge_strategy
-    )
-    
-    # 绑定股票并行搜索方法
-    search_service.search_stock_news_parallel = lambda code, name, max_results=5: _search_stock_news_parallel(
-        search_service, code, name, max_results, merge_strategy
-    )
-    
-    logger.info(f"[并行搜索] 已为SearchService启用并行功能 (最大并发: {max_concurrent})")
-    return search_service
-
-
-def _search_parallel(
-    service: SearchService,
-    query: str,
-    max_results_per_engine: int = 5,
-    days: int = 7,
-    merge_strategy: str = "dedupe_by_url"
-) -> ParallelSearchResponse:
-    """
-    执行多源并行搜索的核心实现
-    """
-    if not service._providers:
-        return ParallelSearchResponse(
-            query=query,
-            results=[],
-            providers_used=[],
-            provider_details={},
-            success=False,
-            error_message="未配置任何搜索引擎"
-        )
-    
-    start_time = time.time()
-    available_providers = [p for p in service._providers if p.is_available]
-    
-    if not available_providers:
-        return ParallelSearchResponse(
-            query=query,
-            results=[],
-            providers_used=[],
-            provider_details={},
-            success=False,
-            error_message="无可用的搜索引擎"
-        )
-    
-    logger.info(f"[并行搜索] 启动多源搜索: '{query}'，使用 {len(available_providers)} 个搜索引擎")
-    
-    # 并行执行所有搜索引擎
-    provider_details = {}
-    providers_used = []
-    
-    max_workers = min(len(available_providers), getattr(service, 'max_concurrent_searches', 4))
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有搜索任务
-        future_to_provider = {
-            executor.submit(provider.search, query, max_results_per_engine, days): provider
-            for provider in available_providers
-        }
+    def search_parallel(
+        self,
+        query: str,
+        max_results: int = 10,
+        timeout: float = 30.0
+    ) -> ParallelSearchResult:
+        """
+        并行搜索
+        
+        Args:
+            query: 搜索查询
+            max_results: 每个引擎最大结果数
+            timeout: 总体超时时间（秒）
+            
+        Returns:
+            并行搜索结果
+        """
+        start_time = datetime.now()
+        
+        if not self.providers:
+            return ParallelSearchResult(
+                query=query,
+                results=[],
+                providers_used=[],
+                success_count=0,
+                failed_providers=[],
+                execution_time=0.0,
+                merged_results=[]
+            )
+        
+        # 并行执行所有可用引擎
+        futures = {}
+        for provider in self.providers:
+            future = self.executor.submit(
+                self._search_single_provider,
+                provider,
+                query,
+                max_results
+            )
+            futures[future] = provider.name
         
         # 收集结果
-        for future in as_completed(future_to_provider):
-            provider = future_to_provider[future]
+        results = []
+        providers_used = []
+        failed_providers = []
+        
+        for future in as_completed(futures, timeout=timeout):
+            provider_name = futures[future]
             try:
-                response = future.result()
-                provider_details[provider.name] = response
-                providers_used.append(provider.name)
-                
-                if response.success:
-                    logger.info(f"[{provider.name}] 搜索完成，返回 {len(response.results)} 条结果，耗时 {response.search_time:.2f}s")
+                result = future.result(timeout=timeout)
+                if result and result.success:
+                    results.append(result.to_dict())
+                    providers_used.append(provider_name)
+                    logger.info(f"[并行搜索] {provider_name} 搜索成功，获得 {len(result.results)} 条结果")
                 else:
-                    logger.warning(f"[{provider.name}] 搜索失败: {response.error_message}")
-                    
+                    failed_providers.append(provider_name)
+                    logger.warning(f"[并行搜索] {provider_name} 搜索失败")
             except Exception as e:
-                error_response = SearchResponse(
-                    query=query,
-                    results=[],
-                    provider=provider.name,
-                    success=False,
-                    error_message=str(e)
-                )
-                provider_details[provider.name] = error_response
-                providers_used.append(provider.name)
-                logger.error(f"[{provider.name}] 搜索异常: {e}")
+                failed_providers.append(provider_name)
+                logger.error(f"[并行搜索] {provider_name} 执行异常: {e}")
+        
+        # 计算执行时间
+        execution_time = (datetime.now() - start_time).total_seconds()
+        
+        # 合并结果（简单去重）
+        merged_results = self._merge_results(results, max_results)
+        
+        logger.info(f"[并行搜索] 完成 - 成功: {len(providers_used)}, 失败: {len(failed_providers)}, "
+                   f"总结果: {len(merged_results)}, 耗时: {execution_time:.2f}s")
+        
+        return ParallelSearchResult(
+            query=query,
+            results=results,
+            providers_used=providers_used,
+            success_count=len(providers_used),
+            failed_providers=failed_providers,
+            execution_time=execution_time,
+            merged_results=merged_results
+        )
     
-    # 合并结果
-    merged_results, merge_stats = _merge_search_results(
-        provider_details, 
-        strategy=merge_strategy
-    )
+    async def search_parallel_async(
+        self,
+        query: str,
+        max_results: int = 10,
+        timeout: float = 30.0
+    ) -> ParallelSearchResult:
+        """
+        异步并行搜索（推荐使用）
+        
+        Args:
+            query: 搜索查询
+            max_results: 每个引擎最大结果数
+            timeout: 总体超时时间
+            
+        Returns:
+            并行搜索结果
+        """
+        start_time = datetime.now()
+        
+        if not self.providers:
+            return ParallelSearchResult(
+                query=query,
+                results=[],
+                providers_used=[],
+                success_count=0,
+                failed_providers=[],
+                execution_time=0.0,
+                merged_results=[]
+            )
+        
+        # 创建异步任务
+        tasks = []
+        for provider in self.providers:
+            task = asyncio.create_task(
+                self._search_single_provider_async(provider, query, max_results)
+            )
+            tasks.append((task, provider.name))
+        
+        # 等待所有任务完成
+        results = []
+        providers_used = []
+        failed_providers = []
+        
+        done, pending = await asyncio.wait(
+            [task for task, _ in tasks],
+            timeout=timeout,
+            return_when=asyncio.ALL_COMPLETED
+        )
+        
+        # 处理完成的任务
+        for task, provider_name in tasks:
+            if task in done:
+                try:
+                    result = task.result()
+                    if result and result.success:
+                        results.append(result.to_dict())
+                        providers_used.append(provider_name)
+                        logger.info(f"[并行搜索] {provider_name} 搜索成功，获得 {len(result.results)} 条结果")
+                    else:
+                        failed_providers.append(provider_name)
+                        logger.warning(f"[并行搜索] {provider_name} 搜索失败")
+                except Exception as e:
+                    failed_providers.append(provider_name)
+                    logger.error(f"[并行搜索] {provider_name} 执行异常: {e}")
+            else:
+                failed_providers.append(provider_name)
+                logger.warning(f"[并行搜索] {provider_name} 超时")
+        
+        # 取消未完成的任务
+        for task in pending:
+            task.cancel()
+        
+        # 计算执行时间
+        execution_time = (datetime.now() - start_time).total_seconds()
+        
+        # 合并结果
+        merged_results = self._merge_results(results, max_results)
+        
+        logger.info(f"[并行搜索] 完成 - 成功: {len(providers_used)}, 失败: {len(failed_providers)}, "
+                   f"总结果: {len(merged_results)}, 耗时: {execution_time:.2f}s")
+        
+        return ParallelSearchResult(
+            query=query,
+            results=results,
+            providers_used=providers_used,
+            success_count=len(providers_used),
+            failed_providers=failed_providers,
+            execution_time=execution_time,
+            merged_results=merged_results
+        )
     
-    total_time = time.time() - start_time
+    def _search_single_provider(
+        self,
+        provider: BaseSearchProvider,
+        query: str,
+        max_results: int
+    ) -> Optional[SearchResponse]:
+        """单个提供者搜索（同步版本）"""
+        try:
+            return provider.search(query, max_results)
+        except Exception as e:
+            logger.error(f"[并行搜索] {provider.name} 搜索异常: {e}")
+            return None
     
-    logger.info(f"[并行搜索] 完成，总计获得 {len(merged_results)} 条去重结果，总耗时 {total_time:.2f}s")
+    async def _search_single_provider_async(
+        self,
+        provider: BaseSearchProvider,
+        query: str,
+        max_results: int
+    ) -> Optional[SearchResponse]:
+        """单个提供者搜索（异步版本）"""
+        try:
+            # 在线程池中执行同步调用
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                self.executor,
+                provider.search,
+                query,
+                max_results
+            )
+        except Exception as e:
+            logger.error(f"[并行搜索] {provider.name} 搜索异常: {e}")
+            return None
     
-    return ParallelSearchResponse(
-        query=query,
-        results=merged_results,
-        providers_used=providers_used,
-        provider_details=provider_details,
-        success=True,
-        total_search_time=total_time,
-        merge_stats=merge_stats
-    )
+    def _merge_results(
+        self,
+        results: List[Dict],
+        max_results: int
+    ) -> List[Dict[str, Any]]:
+        """
+        合并多个搜索结果，去除重复项
+        
+        Args:
+            results: 多个引擎的结果列表
+            max_results: 最大返回结果数
+            
+        Returns:
+            合并后的结果列表
+        """
+        if not results:
+            return []
+        
+        # 收集所有结果
+        all_items = []
+        for result_dict in results:
+            items = result_dict.get('results', [])
+            all_items.extend(items)
+        
+        if not all_items:
+            return []
+        
+        # 基于标题去重（简单策略）
+        seen_titles = set()
+        unique_items = []
+        
+        for item in all_items:
+            title = item.get('title', '').strip()
+            if title and title not in seen_titles:
+                seen_titles.add(title)
+                unique_items.append(item)
+                if len(unique_items) >= max_results:
+                    break
+        
+        return unique_items[:max_results]
+    
+    def close(self):
+        """关闭资源"""
+        self.executor.shutdown(wait=True)
+        logger.info("[并行搜索] 服务已关闭")
 
 
-def _search_stock_news_parallel(
-    service: SearchService,
-    stock_code: str,
-    stock_name: str,
-    max_results_per_engine: int = 5,
-    merge_strategy: str = "dedupe_by_url"
-) -> ParallelSearchResponse:
+# 便捷函数
+def create_parallel_search_service(
+    providers: List[BaseSearchProvider],
+    max_workers: int = 3
+) -> ParallelSearchService:
     """
-    股票新闻的并行搜索
-    """
-    # 构建搜索查询
-    query = f"{stock_name} {stock_code} 股票 最新消息"
-    
-    # 智能确定搜索时间范围
-    import datetime
-    today_weekday = datetime.datetime.now().weekday()
-    if today_weekday == 0:  # 周一
-        search_days = 3
-    elif today_weekday >= 5:  # 周六、周日
-        search_days = 2
-    else:  # 周二至周五
-        search_days = 1
-    
-    return _search_parallel(service, query, max_results_per_engine, search_days, merge_strategy)
-
-
-def _merge_search_results(
-    provider_responses: Dict[str, SearchResponse],
-    strategy: str = "dedupe_by_url"
-) -> tuple[List[SearchResult], Dict[str, int]]:
-    """
-    合并多个搜索引擎的结果
+    创建并行搜索服务实例
     
     Args:
-        provider_responses: 各搜索引擎的响应字典
-        strategy: 合并策略
+        providers: 搜索提供者列表
+        max_workers: 最大并发数
         
     Returns:
-        (合并后的结果列表, 各源贡献统计)
+        并行搜索服务实例
     """
-    all_results = []
-    source_stats = {}
-    
-    # 收集所有结果
-    for provider_name, response in provider_responses.items():
-        if response.success and response.results:
-            all_results.extend(response.results)
-            source_stats[provider_name] = len(response.results)
-    
-    if not all_results:
-        return [], source_stats
-    
-    # 根据策略合并
-    if strategy == "dedupe_by_url":
-        # 按URL去重，保留最早出现的结果
-        seen_urls = set()
-        deduped_results = []
-        
-        for result in all_results:
-            url_key = result.url.lower().strip()
-            if url_key and url_key not in seen_urls:
-                seen_urls.add(url_key)
-                deduped_results.append(result)
-        
-        logger.info(f"[结果合并] 去重前: {len(all_results)} 条，去重后: {len(deduped_results)} 条")
-        return deduped_results, source_stats
-        
-    elif strategy == "score_based":
-        # 基于分数排序（假设有相关性分数）
-        # 这里简化处理，按来源权重排序
-        sorted_results = sorted(all_results, key=lambda x: (
-            x.source in ["Exa", "Tavily"],  # 高质量源优先
-            len(x.snippet)  # 内容更长的优先
-        ), reverse=True)
-        return sorted_results[:len(all_results)//2], source_stats  # 取前一半
-        
-    else:  # keep_all
-        return all_results, source_stats
-
-
-# 使用示例和测试函数
-def demo_parallel_search():
-    """
-    演示并行搜索功能的使用方法
-    """
-    print("=== 并行搜索功能演示 ===")
-    print("1. 启用并行搜索:")
-    print("   search_service = enable_parallel_search(search_service)")
-    print("")
-    print("2. 执行并行搜索:")
-    print("   response = search_service.search_parallel('人工智能 股票')")
-    print("")
-    print("3. 股票新闻并行搜索:")
-    print("   response = search_service.search_stock_news_parallel('600519', '贵州茅台')")
-    print("")
-    print("4. 查看合并结果:")
-    print("   print(response.to_context())")
-    print("   print(f'使用搜索引擎: {response.providers_used}')")
-    print("   print(f'各源贡献: {response.merge_stats}')")
-
-
-if __name__ == "__main__":
-    demo_parallel_search()
+    return ParallelSearchService(providers, max_workers)

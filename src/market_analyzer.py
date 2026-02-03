@@ -5,9 +5,10 @@
 ===================================
 
 职责：
-1. 获取大盘指数数据（上证、深证、创业板）
+1. 获取大盘指数数据（根据STOCK_LIST配置的市场）
 2. 搜索市场新闻形成复盘情报
 3. 使用大模型生成每日大盘复盘报告
+4. 支持多市场（A股、港股、美股、虚拟货币）智能识别
 """
 
 import logging
@@ -126,43 +127,116 @@ class MarketAnalyzer:
 
     
     def _get_main_indices(self) -> List[MarketIndex]:
-        """获取主要指数实时行情"""
+        """获取主要指数实时行情（根据配置的标的类型智能过滤）"""
         indices = []
-
+        
         try:
             logger.info("[大盘] 获取主要指数实时行情...")
-
+            
+            # 分析配置的标的类型
+            config = get_config()
+            stock_list = config.stock_list
+            
+            has_a_stock = any(self._is_a_stock(code) for code in stock_list)
+            has_hk_stock = any(self._is_hk_stock(code) for code in stock_list)
+            has_us_stock = any(self._is_us_stock(code) for code in stock_list)
+            has_crypto = any(self._is_crypto_symbol(code) for code in stock_list)
+            
+            logger.info(f"[大盘] 检测到标的类型: A股={has_a_stock}, 港股={has_hk_stock}, 美股={has_us_stock}, 虚拟货币={has_crypto}")
+            
             # 使用 DataFetcherManager 获取指数行情
-            # Manager 会自动尝试：Akshare -> Tushare -> Yfinance
             data_list = self.data_manager.get_main_indices()
-
+            
             if data_list:
                 for item in data_list:
-                    index = MarketIndex(
-                        code=item['code'],
-                        name=item['name'],
-                        current=item['current'],
-                        change=item['change'],
-                        change_pct=item['change_pct'],
-                        open=item['open'],
-                        high=item['high'],
-                        low=item['low'],
-                        prev_close=item['prev_close'],
-                        volume=item['volume'],
-                        amount=item['amount'],
-                        amplitude=item['amplitude']
-                    )
-                    indices.append(index)
-
+                    symbol = item['code']
+                    name = item['name']
+                    
+                    # 根据标的类型过滤指数
+                    should_include = False
+                    
+                    if has_a_stock and self._is_a_stock_index(symbol):
+                        should_include = True
+                        logger.debug(f"[大盘] 包含A股指数: {name}({symbol})")
+                    elif has_hk_stock and self._is_hk_index(symbol):
+                        should_include = True
+                        logger.debug(f"[大盘] 包含港股指数: {name}({symbol})")
+                    elif has_us_stock and self._is_us_index(symbol):
+                        should_include = True
+                        logger.debug(f"[大盘] 包含美股指数: {name}({symbol})")
+                    elif has_crypto and self._is_crypto_index(symbol):
+                        should_include = True
+                        logger.debug(f"[大盘] 包含虚拟货币指数: {name}({symbol})")
+                    
+                    if should_include:
+                        index = MarketIndex(
+                            code=symbol,
+                            name=name,
+                            current=item['current'],
+                            change=item['change'],
+                            change_pct=item['change_pct'],
+                            open=item['open'],
+                            high=item['high'],
+                            low=item['low'],
+                            prev_close=item['prev_close'],
+                            volume=item['volume'],
+                            amount=item['amount'],
+                            amplitude=item['amplitude']
+                        )
+                        indices.append(index)
+            
             if not indices:
-                logger.warning("[大盘] 所有行情数据源失败，将依赖新闻搜索进行分析")
+                logger.warning("[大盘] 未找到相关市场指数，将依赖新闻搜索进行分析")
             else:
-                logger.info(f"[大盘] 获取到 {len(indices)} 个指数行情")
-
+                logger.info(f"[大盘] 获取到 {len(indices)} 个相关市场指数")
+                
         except Exception as e:
             logger.error(f"[大盘] 获取指数行情失败: {e}")
-
+            
         return indices
+    
+    def _is_a_stock(self, code: str) -> bool:
+        """判断是否为A股"""
+        return code.isdigit() and len(code) in [6, 5] and not code.startswith('hk')
+    
+    def _is_hk_stock(self, code: str) -> bool:
+        """判断是否为港股"""
+        return code.startswith('hk') or (code.isdigit() and len(code) == 5)
+    
+    def _is_us_stock(self, code: str) -> bool:
+        """判断是否为美股"""
+        return code.isalpha() and len(code) in [1, 2, 3, 4] and code.isupper()
+    
+    def _is_crypto_symbol(self, symbol: str) -> bool:
+        """判断是否为虚拟货币符号"""
+        crypto_symbols = {
+            'BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'DOT', 
+            'MATIC', 'LTC', 'TRX', 'AVAX', 'SHIB', 'UNI', 'LINK',
+            'ATOM', 'XMR', 'BCH', 'ETC', 'FIL', 'HBAR', 'ICP', 'FTM'
+        }
+        symbol_upper = symbol.upper()
+        return (
+            symbol_upper in crypto_symbols or
+            (len(symbol_upper) >= 2 and len(symbol_upper) <= 6 and symbol_upper.isalpha())
+        )
+    
+    def _is_a_stock_index(self, symbol: str) -> bool:
+        """判断是否为A股指数"""
+        a_indices = ['000001', '399001', '399006', '000300', '000905']  # 上证、深证、创业板等
+        return symbol in a_indices or 'A股' in symbol or '上证' in symbol or '深证' in symbol
+    
+    def _is_hk_index(self, symbol: str) -> bool:
+        """判断是否为港股指数"""
+        return 'HSI' in symbol or '恒生' in symbol or '港股' in symbol
+    
+    def _is_us_index(self, symbol: str) -> bool:
+        """判断是否为美股指数"""
+        us_indices = ['^GSPC', '^IXIC', '^DJI']  # 标普500、纳斯达克、道琼斯
+        return symbol in us_indices or '美股' in symbol or '道琼斯' in symbol or '纳斯达克' in symbol
+    
+    def _is_crypto_index(self, symbol: str) -> bool:
+        """判断是否为虚拟货币指数"""
+        return 'BTC' in symbol or 'ETH' in symbol or '加密' in symbol or '虚拟货币' in symbol
 
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""

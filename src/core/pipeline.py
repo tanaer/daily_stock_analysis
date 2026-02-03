@@ -446,6 +446,29 @@ class StockAnalysisPipeline:
                 return None
         return None
 
+    def _is_crypto_symbol(self, symbol: str) -> bool:
+        """
+        判断是否为虚拟货币符号
+        
+        Args:
+            symbol: 标的代码
+            
+        Returns:
+            是否为虚拟货币
+        """
+        # 虚拟货币符号通常是3-5个字母的大写组合
+        crypto_symbols = {
+            'BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'DOT', 
+            'MATIC', 'LTC', 'TRX', 'AVAX', 'SHIB', 'UNI', 'LINK',
+            'ATOM', 'XMR', 'BCH', 'ETC', 'FIL', 'HBAR', 'ICP', 'FTM'
+        }
+        
+        symbol_upper = symbol.upper()
+        return (
+            symbol_upper in crypto_symbols or
+            (len(symbol_upper) >= 2 and len(symbol_upper) <= 6 and symbol_upper.isalpha())
+        )
+    
     def _resolve_query_source(self, query_source: Optional[str]) -> str:
         """
         解析请求来源。
@@ -602,16 +625,26 @@ class StockAnalysisPipeline:
             logger.error("未配置自选股列表，请在 .env 文件中设置 STOCK_LIST")
             return []
         
-        logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")
-        logger.info(f"股票列表: {', '.join(stock_codes)}")
+        logger.info(f"===== 开始分析 {len(stock_codes)} 只标的 =====")
+        logger.info(f"标的列表: {', '.join(stock_codes)}")
         logger.info(f"并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}")
         
+        # === 市场类型识别和过滤 ===
+        crypto_symbols = [code for code in stock_codes if self._is_crypto_symbol(code)]
+        stock_symbols = [code for code in stock_codes if not self._is_crypto_symbol(code)]
+        
+        if crypto_symbols:
+            logger.info(f"检测到虚拟货币: {', '.join(crypto_symbols)}")
+        if stock_symbols:
+            logger.info(f"检测到传统股票: {', '.join(stock_symbols)}")
+        
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
-        # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
-        if len(stock_codes) >= 5:
-            prefetch_count = self.fetcher_manager.prefetch_realtime_quotes(stock_codes)
+        # 只对传统股票进行预取，虚拟货币使用专用数据源
+        traditional_stocks = [code for code in stock_codes if not self._is_crypto_symbol(code)]
+        if len(traditional_stocks) >= 5:
+            prefetch_count = self.fetcher_manager.prefetch_realtime_quotes(traditional_stocks)
             if prefetch_count > 0:
-                logger.info(f"已启用批量预取架构：一次拉取全市场数据，{len(stock_codes)} 只股票共享缓存")
+                logger.info(f"已启用批量预取架构：一次拉取全市场数据，{len(traditional_stocks)} 只股票共享缓存")
         
         # 单股推送模式（#55）：从配置读取
         single_stock_notify = getattr(self.config, 'single_stock_notify', False)

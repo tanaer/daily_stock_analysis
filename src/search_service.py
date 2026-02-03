@@ -6,9 +6,11 @@ A股自选股智能分析系统 - 搜索服务模块
 
 职责：
 1. 提供统一的新闻搜索接口
-2. 支持 Tavily 和 SerpAPI 两种搜索引擎
+2. 支持 Tavily、SerpAPI、Bocha、Exa 多种搜索引擎
 3. 多 Key 负载均衡和故障转移
-4. 搜索结果缓存和格式化
+4. **多源并行搜索**：同时调用多个搜索API获取更全面的数据
+5. 搜索结果缓存和格式化
+6. 智能结果合并与去重
 """
 
 import logging
@@ -19,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from itertools import cycle
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from newspaper import Article, Config
 
@@ -86,6 +89,36 @@ class SearchResponse:
             return f"搜索 '{self.query}' 未找到相关结果。"
         
         lines = [f"【{self.query} 搜索结果】（来源：{self.provider}）"]
+        for i, result in enumerate(self.results[:max_results], 1):
+            lines.append(f"\n{i}. {result.to_text()}")
+        
+        return "\n".join(lines)
+
+
+@dataclass
+class ParallelSearchResponse:
+    """多源并行搜索响应"""
+    query: str
+    results: List[SearchResult]
+    providers_used: List[str]  # 使用的搜索引擎列表
+    provider_details: Dict[str, SearchResponse]  # 各提供商的详细响应
+    success: bool = True
+    error_message: Optional[str] = None
+    total_search_time: float = 0.0  # 总搜索耗时
+    merge_stats: Dict[str, int] = field(default_factory=dict)  # 合并统计信息
+    
+    def to_context(self, max_results: int = 10) -> str:
+        """将合并后的搜索结果转换为上下文"""
+        if not self.success or not self.results:
+            return f"多源搜索 '{self.query}' 未找到相关结果。"
+        
+        lines = [f"【{self.query} 多源搜索结果】"]
+        lines.append(f"使用搜索引擎：{', '.join(self.providers_used)}")
+        lines.append(f"去重前结果数：{sum(len(resp.results) for resp in self.provider_details.values())}")
+        lines.append(f"去重后结果数：{len(self.results)}")
+        if self.merge_stats:
+            lines.append(f"各源贡献：{', '.join(f'{k}:{v}' for k,v in self.merge_stats.items())}")
+        
         for i, result in enumerate(self.results[:max_results], 1):
             lines.append(f"\n{i}. {result.to_text()}")
         
@@ -755,6 +788,160 @@ class SearchService:
         """检查是否有可用的搜索引擎"""
         return any(p.is_available for p in self._providers)
     
+    def search_parallel(
+        self,
+        query: str,
+        max_results_per_engine: int = 5,
+        days: int = 7,
+        merge_strategy: str = "dedupe_by_url"
+    ) -> ParallelSearchResponse:
+        """
+        多源并行搜索 - 同时调用多个搜索API获取更全面的数据
+        
+        Args:
+            query: 搜索查询词
+            max_results_per_engine: 每个搜索引擎的最大结果数
+            days: 搜索时间范围（天）
+            merge_strategy: 结果合并策略 ("dedupe_by_url", "score_based", "keep_all")
+            
+        Returns:
+            ParallelSearchResponse 对象，包含所有搜索引擎的结果和合并统计
+        """
+        if not self._providers:
+            return ParallelSearchResponse(
+                query=query,
+                results=[],
+                providers_used=[],
+                provider_details={},
+                success=False,
+                error_message="未配置任何搜索引擎"
+            )
+        
+        start_time = time.time()
+        available_providers = [p for p in self._providers if p.is_available]
+        
+        if not available_providers:
+            return ParallelSearchResponse(
+                query=query,
+                results=[],
+                providers_used=[],
+                provider_details={},
+                success=False,
+                error_message="无可用的搜索引擎"
+            )
+        
+        logger.info(f"[并行搜索] 启动多源搜索: '{query}'，使用 {len(available_providers)} 个搜索引擎")
+        
+        # 并行执行所有搜索引擎
+        provider_details = {}
+        providers_used = []
+        
+        with ThreadPoolExecutor(max_workers=min(len(available_providers), self.max_concurrent_searches)) as executor:
+            # 提交所有搜索任务
+            future_to_provider = {
+                executor.submit(provider.search, query, max_results_per_engine, days): provider
+                for provider in available_providers
+            }
+            
+            # 收集结果
+            for future in as_completed(future_to_provider):
+                provider = future_to_provider[future]
+                try:
+                    response = future.result()
+                    provider_details[provider.name] = response
+                    providers_used.append(provider.name)
+                    
+                    if response.success:
+                        logger.info(f"[{provider.name}] 搜索完成，返回 {len(response.results)} 条结果，耗时 {response.search_time:.2f}s")
+                    else:
+                        logger.warning(f"[{provider.name}] 搜索失败: {response.error_message}")
+                        
+                except Exception as e:
+                    error_response = SearchResponse(
+                        query=query,
+                        results=[],
+                        provider=provider.name,
+                        success=False,
+                        error_message=str(e)
+                    )
+                    provider_details[provider.name] = error_response
+                    providers_used.append(provider.name)
+                    logger.error(f"[{provider.name}] 搜索异常: {e}")
+        
+        # 合并结果
+        merged_results, merge_stats = self._merge_search_results(
+            provider_details, 
+            strategy=merge_strategy
+        )
+        
+        total_time = time.time() - start_time
+        
+        logger.info(f"[并行搜索] 完成，总计获得 {len(merged_results)} 条去重结果，总耗时 {total_time:.2f}s")
+        
+        return ParallelSearchResponse(
+            query=query,
+            results=merged_results,
+            providers_used=providers_used,
+            provider_details=provider_details,
+            success=True,
+            total_search_time=total_time,
+            merge_stats=merge_stats
+        )
+    
+    def _merge_search_results(
+        self,
+        provider_responses: Dict[str, SearchResponse],
+        strategy: str = "dedupe_by_url"
+    ) -> tuple[List[SearchResult], Dict[str, int]]:
+        """
+        合并多个搜索引擎的结果
+        
+        Args:
+            provider_responses: 各搜索引擎的响应字典
+            strategy: 合并策略
+            
+        Returns:
+            (合并后的结果列表, 各源贡献统计)
+        """
+        all_results = []
+        source_stats = {}
+        
+        # 收集所有结果
+        for provider_name, response in provider_responses.items():
+            if response.success and response.results:
+                all_results.extend(response.results)
+                source_stats[provider_name] = len(response.results)
+        
+        if not all_results:
+            return [], source_stats
+        
+        # 根据策略合并
+        if strategy == "dedupe_by_url":
+            # 按URL去重，保留最早出现的结果
+            seen_urls = set()
+            deduped_results = []
+            
+            for result in all_results:
+                url_key = result.url.lower().strip()
+                if url_key and url_key not in seen_urls:
+                    seen_urls.add(url_key)
+                    deduped_results.append(result)
+            
+            logger.info(f"[结果合并] 去重前: {len(all_results)} 条，去重后: {len(deduped_results)} 条")
+            return deduped_results, source_stats
+            
+        elif strategy == "score_based":
+            # 基于分数排序（假设有相关性分数）
+            # 这里简化处理，按来源权重排序
+            sorted_results = sorted(all_results, key=lambda x: (
+                x.source in ["Exa", "Tavily"],  # 高质量源优先
+                len(x.snippet)  # 内容更长的优先
+            ), reverse=True)
+            return sorted_results[:len(all_results)//2], source_stats  # 取前一半
+            
+        else:  # keep_all
+            return all_results, source_stats
+    
     def search_stock_news(
         self,
         stock_code: str,
@@ -762,9 +949,62 @@ class SearchService:
         max_results: int = 5,
         focus_keywords: Optional[List[str]] = None
     ) -> SearchResponse:
-        """
-        搜索股票相关新闻
-        
+       """
+       搜索股票相关新闻
+           
+       Args:
+           stock_code: 股票代码
+           stock_name: 股票名称
+           max_results: 最大返回结果数
+           focus_keywords: 重点关注的关键词列表
+               
+       Returns:
+           SearchResponse 对象
+       """
+       # 智能确定搜索时间范围
+       # 策略：
+       # 1. 周二至周五：搜索近1天（24小时）
+       # 2. 周六、周日：搜索近2-3天（覆盖周末）
+       # 3. 周一：搜索近3天（覆盖周末）
+       today_weekday = datetime.now().weekday()
+       if today_weekday == 0: # 周一
+           search_days = 3
+       elif today_weekday >= 5: # 周六(5)、周日(6)
+           search_days = 2
+       else: # 周二(1) - 周五(4)
+           search_days = 1
+   
+       # 构建搜索查询（优化搜索效果）
+       if focus_keywords:
+           # 如果提供了关键词，直接使用关键词作为查询
+           query = " ".join(focus_keywords)
+       else:
+           # 默认主查询：股票名称 + 核心关键词
+           query = f"{stock_name} {stock_code} 股票 最新消息"
+   
+       logger.info(f"搜索股票新闻: {stock_name}({stock_code}), query='{query}', 时间范围: 近{search_days}天")
+           
+       # 依次尝试各个搜索引擎
+       for provider in self._providers:
+           if not provider.is_available:
+               continue
+               
+           response = provider.search(query, max_results, days=search_days)
+               
+           if response.success and response.results:
+               logger.info(f"使用 {provider.name} 搜索成功")
+               return response
+           else:
+               logger.warning(f"{provider.name} 搜索失败: {response.error_message}，尝试下一个引擎")
+           
+       # 所有引擎都失败
+       return SearchResponse(
+           query=query,
+           results=[],
+           provider="None",
+           success=False,
+           error_message="所有搜索引擎均不可用或搜索失败"
+       )
         Args:
             stock_code: 股票代码
             stock_name: 股票名称
@@ -1218,6 +1458,7 @@ def get_search_service() -> SearchService:
             bocha_keys=config.bocha_api_keys,
             tavily_keys=config.tavily_api_keys,
             serpapi_keys=config.serpapi_keys,
+            exa_keys=config.exa_api_keys,  # 新增Exa支持
         )
     
     return _search_service

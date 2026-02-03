@@ -26,6 +26,7 @@
 
 from .base import BaseFetcher, DataFetcherManager
 from .crypto_fetcher import CryptoFetcher
+from .coindesk_fetcher import CoindeskFetcher
 from .finnhub_fetcher import FinnhubFetcher
 from .massive_fetcher import MassiveFetcher
 from .efinance_fetcher import EfinanceFetcher
@@ -39,6 +40,7 @@ __all__ = [
     'BaseFetcher',
     'DataFetcherManager',
     'CryptoFetcher',
+    'CoindeskFetcher',
     'FinnhubFetcher',
     'MassiveFetcher',
     'EfinanceFetcher',

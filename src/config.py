@@ -45,6 +45,8 @@ class Config:
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
+    finnhub_api_key: Optional[str] = None  # Finnhub API密钥
+    massive_api_key: Optional[str] = None  # Massive API密钥
     
     # === AI 分析配置 ===
     gemini_api_key: Optional[str] = None
@@ -67,6 +69,7 @@ class Config:
     bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
+    exa_api_keys: List[str] = field(default_factory=list)  # Exa API Keys
     
     # === 通知配置（可同时配置多个，全部推送）===
     
@@ -454,16 +457,16 @@ class Config:
         if not self.stock_list:
             warnings.append("警告：未配置自选股列表 (STOCK_LIST)")
         
-        if not self.tushare_token:
-            warnings.append("提示：未配置 Tushare Token，将使用其他数据源")
+        if not self.tushare_token and not self.finnhub_api_key and not self.massive_api_key:
+            warnings.append("提示：未配置数据源 API Token (Tushare/Finnhub/Massive)，将使用默认数据源")
         
         if not self.gemini_api_key and not self.openai_api_key:
             warnings.append("警告：未配置 Gemini 或 OpenAI API Key，AI 分析功能将不可用")
         elif not self.gemini_api_key:
             warnings.append("提示：未配置 Gemini API Key，将使用 OpenAI 兼容 API")
         
-        if not self.bocha_api_keys and not self.tavily_api_keys and not self.serpapi_keys:
-            warnings.append("提示：未配置搜索引擎 API Key (Bocha/Tavily/SerpAPI)，新闻搜索功能将不可用")
+        if not self.bocha_api_keys and not self.tavily_api_keys and not self.serpapi_keys and not self.exa_api_keys:
+            warnings.append("提示：未配置搜索引擎 API Key (Bocha/Tavily/SerpAPI/Exa)，新闻搜索功能将不可用")
         
         # 检查通知配置
         has_notification = (

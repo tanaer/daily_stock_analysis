@@ -42,8 +42,8 @@
 | 类型 | 支持 |
 |------|------|
 | AI 模型 | Gemini（免费）、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama |
-| 行情数据 | AkShare、Tushare、Pytdx、Baostock、YFinance |
-| 新闻搜索 | Tavily、SerpAPI、Bocha |
+| 行情数据 | AkShare、Tushare、Pytdx、Baostock、YFinance、**Finnhub**、**Massive** |
+| 新闻搜索 | Tavily、SerpAPI、Bocha、**Exa** |
 
 ### 内置交易纪律
 
@@ -113,6 +113,9 @@
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 全渠道搜索 | 可选 |
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索优化，支持AI摘要，多个key用逗号分隔） | 可选 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可选 |
+| `FINNHUB_API_KEY` | [Finnhub](https://finnhub.io) 全球金融数据 API 密钥（支持美股、港股、A股实时行情） | 可选 |
+| `MASSIVE_API_KEY` | [Massive](https://massive.com) 财经新闻和市场情绪 API 密钥 | 可选 |
+| `EXA_API_KEYS` | [Exa.ai](https://exa.ai) 高级搜索 API 密钥（多个用逗号分隔） | 可选 |
 | `WECHAT_MSG_TYPE` | 企微消息类型，默认 markdown，支持配置 text 类型，发送纯 markdown 文本 | 可选 |
 
 #### 3. 启用 Actions
@@ -188,7 +191,8 @@ python main.py
 ```
 ## ⚙️ 配置说明
 
-> 📖 完整环境变量、定时任务配置请参考 [完整配置指南](docs/full-guide.md)
+> 📖 完整环境变量、定时任务配置请参考 [完整配置指南](docs/full-guide.md)  
+> 📊 新增数据源配置说明请查看 [数据源配置指南](docs/data-source-config.md)
 
 
 ## 🖥️ 本地 WebUI（可选）

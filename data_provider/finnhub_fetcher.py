@@ -40,7 +40,7 @@ class FinnhubFetcher(BaseFetcher):
     """
     
     name = "Finnhub"
-    priority = 8  # 较高优先级
+    priority = 2  # 最高优先级（港美股专用）
     
     def __init__(self, api_key: Optional[str] = None):
         """

@@ -39,7 +39,7 @@ class YfinanceFetcher(BaseFetcher):
     """
     Yahoo Finance 数据源实现
     
-    优先级：4（最低，作为兜底）
+    优先级：9（最低，作为兜底）
     数据来源：Yahoo Finance
     
     关键策略：
@@ -227,12 +227,9 @@ class YfinanceFetcher(BaseFetcher):
 
         # 映射关系：akshare代码 -> (yfinance代码, 名称)
         yf_mapping = {
-            'sh000001': ('000001.SS', '上证指数'),
-            'sz399001': ('399001.SZ', '深证成指'),
-            'sz399006': ('399006.SZ', '创业板指'),
-            'sh000688': ('000688.SS', '科创50'),
-            'sh000016': ('000016.SS', '上证50'),
-            'sh000300': ('000300.SS', '沪深300'),
+            'DJIA': ('^DJI', '道琼斯工业指数'),
+            'NDX': ('^IXIC', '纳斯达克'),
+            'SPX': ('^GSPC', '标普500'),
         }
 
         results = []

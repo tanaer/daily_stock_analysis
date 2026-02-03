@@ -40,7 +40,7 @@ class MassiveFetcher(BaseFetcher):
     """
     
     name = "Massive"
-    priority = 7  # 高优先级
+    priority = 3  # 高优先级（财经新闻专用）
     
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -433,7 +433,7 @@ class MassiveFetcher(BaseFetcher):
         获取主要指数相关新闻摘要
         """
         try:
-            indices = ["上证指数", "深证成指", "创业板指", "恒生指数", "道琼斯", "纳斯达克", "标普500"]
+            indices = ["恒生指数", "道琼斯", "纳斯达克", "标普500"]
             
             all_news = []
             for index in indices:

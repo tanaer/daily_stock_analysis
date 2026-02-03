@@ -10,26 +10,24 @@
 3. 防封禁流控策略
 
 数据源优先级（动态调整）：
-【配置了 TUSHARE_TOKEN 时】
-1. TushareFetcher (Priority 0) - 🔥 最高优先级（动态提升）
-2. EfinanceFetcher (Priority 0) - 同优先级
-3. AkshareFetcher (Priority 1) - 来自 akshare 库
-4. PytdxFetcher (Priority 2) - 来自 pytdx 库（通达信）
-5. BaostockFetcher (Priority 3) - 来自 baostock 库
-6. YfinanceFetcher (Priority 4) - 来自 yfinance 库
-
-【未配置 TUSHARE_TOKEN 时】
-1. EfinanceFetcher (Priority 0) - 最高优先级，来自 efinance 库
-2. AkshareFetcher (Priority 1) - 来自 akshare 库
-3. PytdxFetcher (Priority 2) - 来自 pytdx 库（通达信）
-4. TushareFetcher (Priority 2) - 来自 tushare 库（不可用）
-5. BaostockFetcher (Priority 3) - 来自 baostock 库
-6. YfinanceFetcher (Priority 4) - 来自 yfinance 库
+【港美股+虚拟货币监控优化版】
+1. CryptoFetcher (Priority 1) - 🔥 虚拟货币专用（最高优先级）
+2. FinnhubFetcher (Priority 2) - 🔥 港美股专用（次高优先级）
+3. MassiveFetcher (Priority 3) - 财经新闻专用
+4. TushareFetcher (Priority 4) - A股专业数据
+5. EfinanceFetcher (Priority 5) - 免费中文数据源
+6. AkshareFetcher (Priority 6) - 备选中文数据源
+7. PytdxFetcher (Priority 7) - 通达信协议数据
+8. BaostockFetcher (Priority 8) - 免费量化数据
+9. YfinanceFetcher (Priority 9) - 兜底国际数据源
 
 提示：优先级数字越小越优先，同优先级按初始化顺序排列
 """
 
 from .base import BaseFetcher, DataFetcherManager
+from .crypto_fetcher import CryptoFetcher
+from .finnhub_fetcher import FinnhubFetcher
+from .massive_fetcher import MassiveFetcher
 from .efinance_fetcher import EfinanceFetcher
 from .akshare_fetcher import AkshareFetcher
 from .tushare_fetcher import TushareFetcher
@@ -40,6 +38,9 @@ from .yfinance_fetcher import YfinanceFetcher
 __all__ = [
     'BaseFetcher',
     'DataFetcherManager',
+    'CryptoFetcher',
+    'FinnhubFetcher',
+    'MassiveFetcher',
     'EfinanceFetcher',
     'AkshareFetcher',
     'TushareFetcher',

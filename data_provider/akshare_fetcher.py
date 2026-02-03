@@ -1309,7 +1309,7 @@ class AkshareFetcher(BaseFetcher):
 
         # 主要指数代码映射
         indices_map = {
-            'sh000001': '上证指数',
+            'sh000001': '纳斯达克',
             'sz399001': '深证成指',
             'sz399006': '创业板指',
             'sh000688': '科创50',
